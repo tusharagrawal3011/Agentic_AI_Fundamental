@@ -34,75 +34,98 @@ Summary:"""
     )
     return response.text.strip()
 
-
 def run_agent(user_input: str, conversation_history: list[Message]) -> list[Message]:
-    """
-    Multi-step ReAct loop.
-
-    The agent keeps reasoning and calling tools until it has
-    enough information to give a final answer — then it stops.
-
-    Each tool result is added back to conversation history so
-    the LLM can see what it already found and decide what to do next.
-    """
-    # Add user message to working memory
     conversation_history.append(Message(role="user", content=user_input))
 
-    step = 1  # track how many reasoning steps we take
+    step = 1
+    final_answer = ""
+    tool_results = []
 
-    # ReAct loop — runs until LLM gives a final answer (no tool call)
+    # ── Phase 1: ReAct loop ──
     while True:
         print(f"  [Step {step}] Thinking...")
-
-        # Send full conversation history to LLM
-        # LLM sees: past context + user question + all previous tool results
         response = llm.chat(conversation_history, tools=ALL_TOOLS)
 
         if response.has_tool_calls:
-            # LLM decided it needs more information — execute the tool
             for tool_call in response.tool_calls:
                 print(f"  [Step {step}] Tool called: {tool_call.name}({tool_call.arguments})")
-
-                # Execute the actual function via dispatcher
                 result = dispatcher.execute(tool_call.name, tool_call.arguments)
                 print(f"  [Step {step}] Result: {result}")
 
-                # Get final answer after tool result
-                final_answer = llm.send_tool_result(
-                    user_question=user_input,
-                    tool_call=tool_call,
-                    result=result
-                )
-
-                # Add tool result to conversation history as assistant message
-                # This is how LLM "remembers" what it already found
-                tool_summary = f"[Tool: {tool_call.name}] Result: {result}"
-                conversation_history.append(
-                    Message(role="assistant", content=tool_summary)
-                )
+                tool_results.append({
+                    "tool": tool_call.name,
+                    "args": tool_call.arguments,
+                    "result": result
+                })
 
             step += 1
 
-            # Safety limit — prevent infinite loops
-            # In production this would be configurable
-            if step > 10:
-                print("  [Warning] Max steps reached, stopping loop.")
-                final_answer = "I was unable to complete the task within the allowed steps."
+            # After all tool calls in this step, ask LLM for next action
+            # Build a summary of what we know so far
+            results_so_far = "\n".join([
+                f"- {t['tool']}({t['args']}) = {t['result']}"
+                for t in tool_results
+            ])
+
+            # Add tool results as a user message — tell LLM "here's what you found"
+            conversation_history.append(Message(
+                role="user",
+                content=f"Tool results so far:\n{results_so_far}\n\nDo you need more tools, or can you give the final answer now?"
+            ))
+
+            if step > 5:
+                print("  [Warning] Max steps reached.")
+                final_answer = f"Based on tool results: {results_so_far}"
                 break
 
         else:
-            # LLM gave a direct answer — no more tools needed
-            # This is the exit condition of the ReAct loop
+            # LLM gave text answer — this is the final answer
             final_answer = response.text
             break
 
+    # ── Phase 2: Self-correction (only for calculations) ──
+    calc_used = any(t["tool"] == "calculator" for t in tool_results)
+
+    if calc_used:
+        print(f"  [Verifying...]")
+
+        results_summary = "\n".join([
+            f"- {t['tool']}({t['args']}) = {t['result']}"
+            for t in tool_results
+        ])
+
+        verify_messages = [
+            Message(
+                role="user",
+                content=f"""Question was: {user_input}
+
+Tool results:
+{results_summary}
+
+Agent's answer: {final_answer}
+
+Is the answer consistent with the tool results?
+Reply ONLY with:
+CORRECT: [clean final answer]
+OR
+CORRECTION: [corrected answer]
+
+Do not call any tools."""
+            )
+        ]
+
+        verify_response = llm.chat(verify_messages, tools=None)
+        verify_text = verify_response.text.strip()
+
+        if verify_text.upper().startswith("CORRECTION:"):
+            print(f"  [Self-correction triggered]")
+            final_answer = verify_text.split(":", 1)[-1].strip()
+        elif verify_text.upper().startswith("CORRECT:"):
+            final_answer = verify_text.split(":", 1)[-1].strip()
+
     print(f"Agent: {final_answer}\n")
-    conversation_history.append(
-        Message(role="assistant", content=final_answer)
-    )
-
+    conversation_history.append(Message(role="assistant", content=final_answer))
     return conversation_history
-
 
 def start_session():
     """
