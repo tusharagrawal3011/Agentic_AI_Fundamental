@@ -1,0 +1,26 @@
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables — never commit API keys
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+.qodo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+.coverage
+htmlcov/
