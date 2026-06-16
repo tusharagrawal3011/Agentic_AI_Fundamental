@@ -1,52 +1,50 @@
 import os
-from llm import get_llm, Message
-from tools import calculator
+from llm import get_llm, Message, ToolDispatcher
+from tools import ALL_TOOLS
 
-# API key is set in terminal as environment variable:
-# $env:GEMINI_API_KEY="your-key-here"
-# No .env file needed — os.environ reads it directly
+# Change provider here — "gemini" or "anthropic"
 llm = get_llm(provider="gemini")
-tools = [calculator]
+
+# Dispatcher automatically routes any tool call to the right function
+dispatcher = ToolDispatcher(ALL_TOOLS)
+
+print(f"Available tools: {dispatcher.list_tools()}\n")
 
 
 def run_agent(user_question: str):
-    print(f"User: {user_question}\n")
+    print(f"User: {user_question}")
+    print("-" * 50)
 
     messages = [Message(role="user", content=user_question)]
 
-    # Step 1: Send question + available tools to LLM
-    response = llm.chat(messages, tools=tools)
+    # Step 1: Send question + all tools to LLM
+    response = llm.chat(messages, tools=ALL_TOOLS)
 
-    print(f"DEBUG - has_tool_calls: {response.has_tool_calls}")
-    print(f"DEBUG - tool_calls: {response.tool_calls}")
-    print()
-
-    # Step 2: Check if LLM decided to call a tool
+    # Step 2: Handle tool calls
     if response.has_tool_calls:
         for tool_call in response.tool_calls:
-            print(f"LLM wants to call: {tool_call.name}({tool_call.arguments})")
+            print(f"Tool called : {tool_call.name}")
+            print(f"Arguments  : {tool_call.arguments}")
 
-            # Step 3: Execute the tool (your code runs the actual function)
-            if tool_call.name == "calculator":
-                result = calculator(**tool_call.arguments)
-                print(f"Tool result: {result}\n")
+            # Step 3: Dispatcher executes the correct function automatically
+            result = dispatcher.execute(tool_call.name, tool_call.arguments)
+            print(f"Result     : {result}")
 
-            # Step 4: Send result back to LLM and get the final natural language answer
+            # Step 4: Send result back, get final answer
             final_answer = llm.send_tool_result(
                 user_question=user_question,
                 tool_call=tool_call,
                 result=result
             )
-            print(f"Final answer: {final_answer}")
-
+            print(f"Answer     : {final_answer}")
     else:
-        # LLM answered directly without needing any tool
-        print(f"Answer: {response.text}")
+        print(f"Answer     : {response.text}")
 
     print()
 
 
 if __name__ == "__main__":
-    run_agent("Use the calculator tool to multiply 847 by 23")
-    print("---")
-    run_agent("What is the capital of France?")
+    run_agent("What is 1234 multiplied by 567?")
+    run_agent("What is the weather in Bangalore?")
+    run_agent("How many words are in the sentence: The quick brown fox jumps over the lazy dog")
+    run_agent("What is the capital of Japan?")
